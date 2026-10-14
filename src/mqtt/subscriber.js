@@ -8,6 +8,7 @@ const { pool } = require("../config/postgre");
 const { publishMessage } = require("./publisher");
 const { getHyperbaseStatus } = require("../socket/index");
 const redisClient = require("../config/redis"); 
+const { recordLatest } = require("../helpers/latestStore");
 
 // Track active subscriptions
 const activeSubscriptions = new Set();
@@ -160,6 +161,19 @@ mqttSubscriber.on("message", async (topic, message) => {
       }
 
       const collection_id = topic.split("/")[2]; // Assuming deviceId is used as collection_id
+
+      // Remember the newest timestamp seen for this device so /weather-data/latest
+      // can answer from Redis without the expensive Scylla max().
+      try {
+        const payloadTs =
+          parsedMessage && typeof parsedMessage === "object"
+            ? parsedMessage.timestamp || parsedMessage._updated_at
+            : null;
+        await recordLatest(deviceId, payloadTs || new Date());
+      } catch (err) {
+        logger.warn(`Failed to record latest timestamp for ${deviceId}: ${err.message}`);
+      }
+
       if (getHyperbaseStatus()) {
         // Hyperbase is online
         publishMessage(

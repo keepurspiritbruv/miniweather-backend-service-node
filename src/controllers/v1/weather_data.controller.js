@@ -3,6 +3,7 @@ const redis = require("../../config/redis");
 const weatherDataRepository = require("../../repositories/weather_data/weatherData.factory");
 const CustomError = require("../../helpers/customError");
 const collectionsRepository = require("../../repositories/collections/collections.factory");
+const { getLatest: getLatestFromStream } = require("../../helpers/latestStore");
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -10,6 +11,25 @@ const UUID_RE =
 // Short-lived cache so a repeatedly-loaded dashboard does not trigger a
 // server-side max() over the device partition on every request.
 const LATEST_CACHE_TTL_SECONDS = 45;
+
+// The Scylla max() fallback can be slow on a large partition; cap it so a slow
+// cluster can never hang the request.
+const LATEST_FALLBACK_TIMEOUT_MS = 2500;
+
+const withTimeout = (promise, ms) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("latest lookup timed out")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 
 /**
  * Validate deviceId and derive the Scylla identifiers.
@@ -140,10 +160,21 @@ const getLatestWeatherTime = async (req) => {
     return { deviceId, latest: cached === "__none__" ? null : cached };
   }
 
-  const latest = await weatherDataRepository.getLatestTimestamp({
-    tableName,
-    collectionId,
-  });
+  // Preferred: the newest timestamp recorded from the MQTT stream (O(1)).
+  let latest = await getLatestFromStream(deviceId);
+
+  // Fallback for devices that have not been heard from recently: ask Scylla,
+  // but cap the wait and degrade to null instead of failing the request.
+  if (!latest) {
+    try {
+      latest = await withTimeout(
+        weatherDataRepository.getLatestTimestamp({ tableName, collectionId }),
+        LATEST_FALLBACK_TIMEOUT_MS
+      );
+    } catch (err) {
+      latest = null;
+    }
+  }
 
   await redis.set(cacheKey, latest ?? "__none__", "EX", LATEST_CACHE_TTL_SECONDS);
 
