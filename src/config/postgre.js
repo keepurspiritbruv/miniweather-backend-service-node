@@ -23,7 +23,6 @@ const checkDatabaseConnection = async () => {
 };
 
 const DEFAULT_SUPERADMIN_EMAIL = "admin@example.com";
-const DEFAULT_SUPERADMIN_PASSWORD = "ChangeMe123!";
 const DEFAULT_SUPERADMIN_NAME = "Super Admin";
 
 async function checkAndCreateTables() {
@@ -157,8 +156,7 @@ async function checkAndCreateTables() {
     `);
 
     const email = process.env.SUPERADMIN_EMAIL || DEFAULT_SUPERADMIN_EMAIL;
-    const rawPassword =
-      process.env.SUPERADMIN_PASSWORD || DEFAULT_SUPERADMIN_PASSWORD;
+    const rawPassword = process.env.SUPERADMIN_PASSWORD;
     const name = process.env.SUPERADMIN_NAME || DEFAULT_SUPERADMIN_NAME;
 
     const countRes = await client.query(
@@ -167,14 +165,21 @@ async function checkAndCreateTables() {
     const exists = parseInt(countRes.rows[0].count, 10) > 0;
 
     if (!exists) {
-      const passwordHash = await bcrypt.hash(rawPassword, 10);
+      if (!rawPassword) {
+        // Never fall back to a baked-in default: the credential must come from env.
+        console.warn(
+          "⚠️ SUPERADMIN_PASSWORD is not set — skipping superadmin seed."
+        );
+      } else {
+        const passwordHash = await bcrypt.hash(rawPassword, 10);
 
-      await client.query(
-        `INSERT INTO public.users (name, email, password_hash, role, is_active)
-         VALUES ($1, $2, $3, 'superAdmin', true);`,
-        [name, email, passwordHash]
-      );
-      console.log(`✅ Superadmin created: ${email}`);
+        await client.query(
+          `INSERT INTO public.users (name, email, password_hash, role, is_active)
+           VALUES ($1, $2, $3, 'superAdmin', true);`,
+          [name, email, passwordHash]
+        );
+        console.log(`✅ Superadmin created: ${email}`);
+      }
     } else {
       console.log("🔐 Superadmin already exists. Skipping creation.");
     }

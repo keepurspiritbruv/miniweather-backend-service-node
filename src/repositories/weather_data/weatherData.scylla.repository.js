@@ -25,6 +25,7 @@ class WeatherDataRepositoryScyllaDB {
     const cacheKey = this._generateCacheKey({
       prefix: "minute_avg",
       table: sanitizedTable,
+      collectionId,
       startTime,
       endTime,
       timezone,
@@ -193,8 +194,8 @@ class WeatherDataRepositoryScyllaDB {
     return tableName;
   }
 
-  _generateCacheKey({ prefix, table, startTime, endTime, timezone, fields }) {
-    const raw = `${table}|${startTime.toISOString()}|${endTime.toISOString()}|${timezone}|${fields.join(",")}`;
+  _generateCacheKey({ prefix, table, collectionId, startTime, endTime, timezone, fields }) {
+    const raw = `${table}|${collectionId}|${startTime.toISOString()}|${endTime.toISOString()}|${timezone}|${fields.join(",")}`;
     const hash = crypto.createHash("sha256").update(raw).digest("hex");
     return `${prefix}:${table}:${hash}`;
   }

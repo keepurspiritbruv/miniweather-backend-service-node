@@ -38,6 +38,7 @@ pool
   .then(() => pool.checkAndCreateTables())
   .then(() => {
     require("./worker/hyperbaseFlushWorker.js");
+    require("./worker/historyPrewarmWorker.js");
     const { mqttSubscriber } = require("./mqtt/subscriber.js");
 
     server.listen(HTTP_PORT, () => {

@@ -9,7 +9,26 @@ const UUID_RE =
 
 // Short-lived cache so a repeatedly-loaded dashboard does not trigger a
 // server-side max() over the device partition on every request.
-const LATEST_CACHE_TTL_SECONDS = 45;
+const LATEST_CACHE_TTL_SECONDS = 600;
+
+// The Scylla max() can be slow on a large partition; cap it so a slow cluster
+// can never hang the request.
+const LATEST_QUERY_TIMEOUT_MS = 30000;
+
+const withTimeout = (promise, ms) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("latest lookup timed out")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 
 /**
  * Validate deviceId and derive the Scylla identifiers.
@@ -92,7 +111,21 @@ const getWeatherDataAverages = async (req) => {
   // Fetch data from the device's Scylla partition
   let data;
   switch (interval) {
-    case "minute":
+    case "minute": {
+      // The dashboard's default "last 24 hours" window is prewarmed and cached
+      // separately, since the repository cache key includes exact timestamps.
+      const spanMs = endTime - startTime;
+      const isLast24h = Math.abs(spanMs - 24 * 60 * 60 * 1000) < 60 * 1000;
+      const minuteCacheKey = `minute24:${deviceId}`;
+
+      if (isLast24h) {
+        const cached = await redis.get(minuteCacheKey);
+        if (cached) {
+          data = JSON.parse(cached);
+          break;
+        }
+      }
+
       data = await weatherDataRepository.getMinuteAverages({
         startTime,
         endTime,
@@ -101,7 +134,12 @@ const getWeatherDataAverages = async (req) => {
         collectionId,
         fields,
       });
+
+      if (isLast24h) {
+        await redis.set(minuteCacheKey, JSON.stringify(data), "EX", 600);
+      }
       break;
+    }
     case "raw":
       data = await weatherDataRepository.getDataInTimeRange({
         startTime,
@@ -140,10 +178,10 @@ const getLatestWeatherTime = async (req) => {
     return { deviceId, latest: cached === "__none__" ? null : cached };
   }
 
-  const latest = await weatherDataRepository.getLatestTimestamp({
-    tableName,
-    collectionId,
-  });
+  const latest = await withTimeout(
+    weatherDataRepository.getLatestTimestamp({ tableName, collectionId }),
+    LATEST_QUERY_TIMEOUT_MS
+  ).catch(() => null);
 
   await redis.set(cacheKey, latest ?? "__none__", "EX", LATEST_CACHE_TTL_SECONDS);
 
